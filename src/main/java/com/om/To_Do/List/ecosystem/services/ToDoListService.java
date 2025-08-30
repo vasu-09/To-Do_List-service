@@ -3,6 +3,7 @@ package com.om.To_Do.List.ecosystem.services;
 import com.om.To_Do.List.ecosystem.client.UserServiceClient;
 import com.om.To_Do.List.ecosystem.dto.*;
 import com.om.To_Do.List.ecosystem.model.ListRecipient;
+import com.om.To_Do.List.ecosystem.model.ListType;
 import com.om.To_Do.List.ecosystem.model.ToDoItem;
 import com.om.To_Do.List.ecosystem.model.ToDoList;
 import com.om.To_Do.List.ecosystem.repository.ListRecipientRepository;
@@ -17,6 +18,7 @@ import org.springframework.stereotype.Service;
 import java.nio.file.AccessDeniedException;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.ArrayList;
 
 @Service
 @RequiredArgsConstructor
@@ -36,7 +38,8 @@ public class ToDoListService {
     private UserServiceClient userServiceClient;
 
     @Autowired
-    private final PaymentService paymentService;
+    // injected via @RequiredArgsConstructor
+    private  PaymentService paymentService;
 
     // Step 1: Create list without recipients
     @Transactional
@@ -49,23 +52,22 @@ public class ToDoListService {
                             "Use /api/lists/checklist for simple item-only lists.");
         }
 
-        ToDoList list = ToDoList.builder()
-                .createdByUserId(request.getCreatedByUserId())
-                .title(request.getTitle())
-                .createdAt(LocalDateTime.now())
-                .build();
-
+        ToDoList list = new ToDoList();
+        list.setCreatedByUserId(request.getCreatedByUserId());
+        list.setTitle(request.getTitle());
+        list.setCreatedAt(LocalDateTime.now());
+        list.setListType(ListType.PREMIUM);
         toDoListRepository.save(list);
 
-        List<ToDoItem> items = request.getItems().stream()
-                .map(dto -> ToDoItem.builder()
-                        .itemName(dto.getItemName())
-                        .quantity(dto.getQuantity())
-                        .priceText(dto.getPriceText())
-                        .subQuantitiesJson(dto.getSubQuantitiesJson())
-                        .list(list)
-                        .build())
-                .toList();
+        List<ToDoItem> items = request.getItems().stream().map(dto -> {
+            ToDoItem item = new ToDoItem();
+            item.setItemName(dto.getItemName());
+            item.setQuantity(dto.getQuantity());
+            item.setPriceText(dto.getPriceText());
+            item.setSubQuantitiesJson(dto.getSubQuantitiesJson());
+            item.setList(list);
+            return item;
+        }).toList();
 
         toDoItemRepository.saveAll(items);
         return list;
@@ -74,23 +76,23 @@ public class ToDoListService {
     // --- FREE (and also allowed for paid) simple checklists ---
     @Transactional
     public ToDoList createChecklist(CreateChecklistRequest request) {
-        ToDoList list = ToDoList.builder()
-                .createdByUserId(request.getCreatedByUserId())
-                .title(request.getTitle())
-                .createdAt(LocalDateTime.now())
-                .build();
-
+        ToDoList list = new ToDoList();
+        list.setCreatedByUserId(request.getCreatedByUserId());
+        list.setTitle(request.getTitle());
+        list.setCreatedAt(LocalDateTime.now());
+        list.setListType(ListType.BASIC);
         toDoListRepository.save(list);
 
-        List<ToDoItem> items = request.getItems().stream()
-                .map(dto -> ToDoItem.builder()
-                        .itemName(dto.getItemName())
-                        .quantity(null)              // force simple fields
-                        .priceText(null)
-                        .subQuantitiesJson(null)
-                        .list(list)
-                        .build())
-                .toList();
+        List<ToDoItem> items = request.getItems().stream().map(dto -> {
+            ToDoItem item = new ToDoItem();
+            item.setItemName(dto.getItemName());
+            // force simple fields
+            item.setQuantity(null);
+            item.setPriceText(null);
+            item.setSubQuantitiesJson(null);
+            item.setList(list);
+            return item;
+        }).toList();
 
         toDoItemRepository.saveAll(items);
         return list;
@@ -128,10 +130,12 @@ public class ToDoListService {
         // Build new recipient entities
         List<ListRecipient> newRecipients = userIds.stream()
                 .filter(id -> !existingRecipientIds.contains(id))
-                .map(id -> ListRecipient.builder()
-                        .list(list)
-                        .recipientUserId(id)
-                        .build())
+                .map(id -> {
+                    ListRecipient r = new ListRecipient();
+                    r.setList(list);
+                    r.setRecipientUserId(id);
+                    return r;
+                })
                 .toList();
 
         if (newRecipients.isEmpty()) return;
@@ -170,28 +174,33 @@ public class ToDoListService {
         }
 
         if (!list.getCreatedByUserId().equals(userId)) {
-            throw new AccessDeniedException("Only the meeting creator can update this meeting.");
+            throw new AccessDeniedException("Only the list creator can update this list.");
         }
         // Delete old items and add new ones
         toDoItemRepository.deleteByListId(listId);
 
-        List<ToDoItem> updatedItems = request.getItems().stream().map(dto -> ToDoItem.builder()
-                .itemName(dto.getItemName())
-                .quantity(dto.getQuantity())
-                .priceText(dto.getPriceText())
-                .subQuantitiesJson(dto.getSubQuantitiesJson())
-                .list(list)
-                .build()).toList();
+        List<ToDoItem> updatedItems = request.getItems().stream().map(dto -> {
+            ToDoItem item = new ToDoItem();
+            item.setItemName(dto.getItemName());
+            item.setQuantity(dto.getQuantity());
+            item.setPriceText(dto.getPriceText());
+            item.setSubQuantitiesJson(dto.getSubQuantitiesJson());
+            item.setList(list);
+            return item;
+        }).toList();
 
         toDoItemRepository.saveAll(updatedItems);
 
         return toDoListRepository.save(list);
     }
 
-    public void deleteList(Long listId) {
+    public void deleteList(Long listId, Long userId) throws AccessDeniedException {
         ToDoList list = toDoListRepository.findById(listId)
                 .orElseThrow(() -> new RuntimeException("List not found"));
 
+        if (!list.getCreatedByUserId().equals(userId)) {
+            throw new AccessDeniedException("Only the list creator can delete this list.");
+        }
         toDoListRepository.delete(list);
     }
 
@@ -212,7 +221,7 @@ public class ToDoListService {
 
         ToDoListSummaryDTO dto = new ToDoListSummaryDTO();
         dto.setTitle(list.getTitle());
-
+        dto.setListType(list.getListType().name());
         List<ToDoItemDTO> itemDTOs = list.getItems().stream().map(item -> {
             ToDoItemDTO itemDTO = new ToDoItemDTO();
             itemDTO.setItemName(item.getItemName());
@@ -236,7 +245,6 @@ public class ToDoListService {
             return dto;
         }).toList();
     }
-
 
     public ToDoListSummaryDTO getSharedList(Long listId, Long creatorId, Long recipientId) {
         ToDoList list = listRecipientRepository.findSharedList(listId, creatorId, recipientId)
@@ -272,7 +280,6 @@ public class ToDoListService {
         return dto;
     }
 
-
     public void deleteRecipientByPhone(Long listId, String phoneNumber, Long creatorId) throws AccessDeniedException {
         ToDoList list = toDoListRepository.findByIdAndCreatedByUserId(listId, creatorId)
                 .orElseThrow(() -> new RuntimeException("List not found or unauthorized"));
@@ -304,7 +311,6 @@ public class ToDoListService {
     }
 
     public ToDoItem updateItem(Long listId, Long itemId, Long userId, UpdateItemRequest req) throws AccessDeniedException {
-
 
         // 1) verify list exists
         ToDoList list = toDoListRepository.findById(listId)
@@ -345,7 +351,6 @@ public class ToDoListService {
      */
     public void deleteItem(Long listId, Long itemId, Long userId) throws AccessDeniedException {
 
-
         ToDoList list = toDoListRepository.findById(listId)
                 .orElseThrow(() -> new RuntimeException("List not found"));
         boolean active = paymentService.isSubscriptionActive(list.getCreatedByUserId());
@@ -364,7 +369,6 @@ public class ToDoListService {
         if (!item.getList().getId().equals(listId)) {
             throw new RuntimeException("Item does not belong to list " + listId);
         }
-
 
         toDoItemRepository.delete(item);
     }
@@ -423,5 +427,53 @@ public class ToDoListService {
         // 4) delete
         toDoItemRepository.delete(item);
     }
-}
 
+    public List<ToDoItem> getUpdatesSince(Long listId, LocalDateTime since) {
+        return toDoItemRepository.findByListIdAndUpdatedAtAfter(listId, since);
+    }
+
+    @Transactional
+    public SyncResponse syncOfflineUpdates(Long listId, SyncRequest request) {
+        ToDoList list = toDoListRepository.findById(listId)
+                .orElseThrow(() -> new RuntimeException("List not found"));
+
+        List<ToDoItem> updatedItems = new ArrayList<>();
+        List<SyncConflictDTO> conflicts = new ArrayList<>();
+
+        for (SyncItemDTO dto : request.getItems()) {
+            String action = dto.getAction();
+            if ("CREATE".equalsIgnoreCase(action)) {
+                ToDoItem item = new ToDoItem();
+                item.setItemName(dto.getItemName());
+                item.setQuantity(dto.getQuantity());
+                item.setPriceText(dto.getPriceText());
+                item.setSubQuantitiesJson(dto.getSubQuantitiesJson());
+                item.setList(list);
+                updatedItems.add(toDoItemRepository.save(item));
+            } else if ("UPDATE".equalsIgnoreCase(action)) {
+                ToDoItem existing = toDoItemRepository.findById(dto.getId()).orElse(null);
+                if (existing == null) {
+                    conflicts.add(new SyncConflictDTO(dto.getId(), "Item not found"));
+                } else if (dto.getUpdatedAt() != null && existing.getUpdatedAt() != null
+                        && existing.getUpdatedAt().isAfter(dto.getUpdatedAt())) {
+                    conflicts.add(new SyncConflictDTO(dto.getId(), "Item modified on server"));
+                } else {
+                    existing.setItemName(dto.getItemName());
+                    existing.setQuantity(dto.getQuantity());
+                    existing.setPriceText(dto.getPriceText());
+                    existing.setSubQuantitiesJson(dto.getSubQuantitiesJson());
+                    updatedItems.add(toDoItemRepository.save(existing));
+                }
+            } else if ("DELETE".equalsIgnoreCase(action)) {
+                ToDoItem existing = toDoItemRepository.findById(dto.getId()).orElse(null);
+                if (existing == null) {
+                    conflicts.add(new SyncConflictDTO(dto.getId(), "Item already deleted"));
+                } else {
+                    toDoItemRepository.delete(existing);
+                }
+            }
+        }
+
+        return new SyncResponse(updatedItems, conflicts);
+    }
+}

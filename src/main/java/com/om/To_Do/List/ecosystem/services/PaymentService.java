@@ -3,12 +3,14 @@ package com.om.To_Do.List.ecosystem.services;
 import com.om.To_Do.List.ecosystem.model.Subscription;
 import com.om.To_Do.List.ecosystem.repository.PaymentRepository;
 import com.om.To_Do.List.ecosystem.repository.SubscriptionRepository;
+import org.springframework.scheduling.annotation.Scheduled;
 import com.razorpay.Entity;
 import com.razorpay.RazorpayClient;
 import com.razorpay.RazorpayException;
 import com.razorpay.Utils;
 import lombok.RequiredArgsConstructor;
 import org.json.JSONObject;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -22,12 +24,19 @@ import java.util.Optional;
 @RequiredArgsConstructor
 public class PaymentService {
 
-    private final PaymentRepository paymentRepo;
-    private final SubscriptionRepository subscriptionRepo;
+    @Autowired
+    private  PaymentRepository paymentRepo;
+    @Autowired
+    private  SubscriptionRepository subscriptionRepo;
 
-    @Value("${razorpay.keyId}")         private String keyId;
-    @Value("${razorpay.keySecret}")     private String keySecret;
-    @Value("${razorpay.webhookSecret}") private String webhookSecret;
+    @Autowired
+    private TokenEncryptor tokenEncryptor;
+    @Value("${razorpay.key:}")
+    private String keyId;
+    @Value("${razorpay.secret:}")
+    private String keySecret;
+
+    @Value("${razorpay.webhookSecret:}") private String webhookSecret;
 
     private RazorpayClient client;
 
@@ -107,7 +116,7 @@ public class PaymentService {
             Subscription sub = subscriptionRepo.findByUserId(userId).orElseGet(Subscription::new);
             sub.setUserId(userId);
             sub.setSubscriptionId(subscriptionId);
-            sub.setIsActive(false);
+            sub.setActive(false);
             LocalDate todayIST = LocalDate.now(ZoneId.of("Asia/Kolkata"));
             sub.setStartDate(todayIST);
             sub.setExpiryDate(todayIST); // extend on invoice.paid
@@ -136,7 +145,7 @@ public class PaymentService {
 
             Optional<Subscription> opt = subscriptionRepo.findBySubscriptionId(subscriptionId);
             opt.ifPresent(sub -> {
-                sub.setIsActive(false);
+                sub.setActive(false);
                 subscriptionRepo.save(sub);
             });
 
@@ -212,12 +221,16 @@ public class PaymentService {
         if (subscriptionId == null) return;
 
         subscriptionRepo.findBySubscriptionId(subscriptionId).ifPresent(sub -> {
-            sub.setIsActive(true);
+            sub.setActive(true);
             LocalDate todayIST = LocalDate.now(ZoneId.of("Asia/Kolkata"));
             if (sub.getExpiryDate() == null || sub.getExpiryDate().isBefore(todayIST)) {
                 // Default monthly; change if your plan is different
                 sub.setExpiryDate(todayIST.plusDays(30));
             }
+            String customerId = subEntity.optString("customer_id", null);
+            String tokenId = subEntity.optString("token_id", null);
+            if (customerId != null) sub.setCustomerId(customerId);
+            if (tokenId != null) sub.setPaymentToken(tokenEncryptor.encrypt(tokenId));
             subscriptionRepo.save(sub);
         });
     }
@@ -228,7 +241,8 @@ public class PaymentService {
         if (subscriptionId == null) return;
 
         subscriptionRepo.findBySubscriptionId(subscriptionId).ifPresent(sub -> {
-            sub.setIsActive(false);
+            sub.setActive(false);
+            sub.setPaymentToken(null); // remove stored token when subscription is inactive
             subscriptionRepo.save(sub);
         });
     }
@@ -243,8 +257,11 @@ public class PaymentService {
             LocalDate today = LocalDate.now(IST);
             LocalDate base = (sub.getExpiryDate() != null && sub.getExpiryDate().isAfter(today))
                     ? sub.getExpiryDate() : today;
-            sub.setIsActive(true);
+            sub.setActive(true);
             sub.setExpiryDate(base.plusDays(30)); // Default to monthly cycles
+            // reset failure tracking on successful renewal
+            sub.setFailureCount(0);
+            sub.setLastFailureAt(null);
             subscriptionRepo.save(sub);
         });
     }
@@ -255,16 +272,37 @@ public class PaymentService {
         if (subscriptionId == null) return;
 
         subscriptionRepo.findBySubscriptionId(subscriptionId).ifPresent(sub -> {
-            // Optional: add grace logic here
-            sub.setIsActive(false);
+            ZoneId IST = ZoneId.of("Asia/Kolkata");
+            LocalDateTime now = LocalDateTime.now(IST);
+            int failures = sub.getFailureCount() == null ? 0 : sub.getFailureCount();
+            failures++;
+            sub.setFailureCount(failures);
+            sub.setLastFailureAt(now);
+            // Immediate downgrade after 3 consecutive failures
+            if (failures >= 3) {
+                sub.setActive(false);
+            }
             subscriptionRepo.save(sub);
         });
     }
 
+    @Scheduled(cron = "0 0 0 * * *", zone = "Asia/Kolkata")
+    public void revokeAfterGracePeriod() {
+        LocalDateTime cutoff = LocalDateTime.now(ZoneId.of("Asia/Kolkata")).minusDays(3);
+        subscriptionRepo.findAll().forEach(sub -> {
+            if (Boolean.TRUE.equals(sub.getActive()) &&
+                    sub.getFailureCount() != null && sub.getFailureCount() > 0 &&
+                    sub.getLastFailureAt() != null && sub.getLastFailureAt().isBefore(cutoff)) {
+                sub.setActive(false);
+                sub.setPaymentToken(null);
+                subscriptionRepo.save(sub);
+            }
+        });
+    }
     public boolean isSubscriptionActive(Long userId) {
         LocalDate today = LocalDate.now(ZoneId.of("Asia/Kolkata"));
         return subscriptionRepo.findByUserId(userId)
-                .map(s -> s.getIsActive() && s.getExpiryDate() != null && !s.getExpiryDate().isBefore(today))
+                .map(s -> s.getActive() && s.getExpiryDate() != null && !s.getExpiryDate().isBefore(today))
                 .orElse(false);
     }
 }

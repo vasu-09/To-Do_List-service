@@ -1,6 +1,7 @@
 package com.om.To_Do.List.ecosystem.controller;
 import com.om.To_Do.List.ecosystem.services.PaymentService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -9,9 +10,11 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api/v1/payments")
 @RequiredArgsConstructor
+@CrossOrigin(origins = "${cors.allowed-origins}")
 public class PaymentController {
 
-    private final PaymentService paymentService;
+    @Autowired
+    private  PaymentService paymentService;
 
     /**
      * Create a Razorpay Subscription (Autopay) with RBI/UPI guardrails.
@@ -57,4 +60,6 @@ public class PaymentController {
         paymentService.handleWebhook(payload, signature);
         return ResponseEntity.ok(Map.of("ok", true));
     }
+
+
 }
